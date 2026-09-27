@@ -307,8 +307,8 @@ def main(config_path=None, debug=False):
             print(f"  Next reset: {next_reset.strftime('%H:%M UTC+8')}")
 
             if weekly_total > 0:
-                weekly_start = datetime.fromtimestamp(model["weekly_start_time"] / 1000, tz=timezone.utc).astimezone(get_timezone(config_path))
-                weekly_end = datetime.fromtimestamp(model["weekly_end_time"] / 1000, tz=timezone.utc).astimezone(get_timezone(config_path))
+                weekly_start = datetime.fromtimestamp(model["weekly_start_time"] / 1000, tz=timezone.utc).astimezone(get_timezone(config_path=config_path))
+                weekly_end = datetime.fromtimestamp(model["weekly_end_time"] / 1000, tz=timezone.utc).astimezone(get_timezone(config_path=config_path))
                 weekly_hours = (weekly_end - now).total_seconds() / 3600
                 weekly_total_hours = (weekly_end - weekly_start).total_seconds() / 3600
                 weekly_elapsed = weekly_total_hours - weekly_hours
@@ -325,7 +325,7 @@ def main(config_path=None, debug=False):
                 weekly_elapsed_pct = max(0, 100 - weekly_remaining_pct)
                 weekly_elapsed_filled = min(round((weekly_elapsed_pct / 100) * 20), 20)
                 weekly_elapsed_empty = 20 - weekly_elapsed_filled
-                weekly_end = datetime.fromtimestamp(model["weekly_end_time"] / 1000, tz=timezone.utc).astimezone(get_timezone(config_path))
+                weekly_end = datetime.fromtimestamp(model["weekly_end_time"] / 1000, tz=timezone.utc).astimezone(get_timezone(config_path=config_path))
                 weekly_secs = (weekly_end - now).total_seconds()
                 if weekly_secs >= 86400:
                     d = int(weekly_secs // 86400)
