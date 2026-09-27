@@ -267,5 +267,92 @@ class TestTimeBar(unittest.TestCase):
         self.assertIn("%", result)
 
 
+class TestGetTimezoneKwarg(unittest.TestCase):
+    """Regression test: get_timezone(config_path=...) must accept the config path
+    as a keyword argument, not positionally. Positionally, the first arg is
+    `tz_name` and would be passed to zoneinfo.ZoneInfo() as the timezone
+    identifier. This previously caused a cryptic error in the weekly-limit
+    display branch:
+        ZoneInfo keys may not be absolute paths, got: /path/to/config.yml
+    """
+
+    def setUp(self):
+        # lru_cache on get_timezone means tests share results within a run;
+        # clear it so each test starts fresh with its own config.
+        from run import get_timezone
+        get_timezone.cache_clear()
+
+    def _write_config(self, tmp_dir, timezone_name):
+        import yaml as _yaml
+        path = os.path.join(tmp_dir, "config.yml")
+        with open(path, "w") as f:
+            _yaml.safe_dump({"api_key": "fake", "timezone": timezone_name}, f)
+        return path
+
+    def test_get_timezone_accepts_config_path_kwarg(self):
+        """The fix: get_timezone(config_path=<abs path>) returns a ZoneInfo
+        for the timezone named inside the config file. Before the fix, the
+        config path was being passed positionally as `tz_name`, which made
+        ZoneInfo treat it as a timezone identifier and raise KeyError."""
+        import tempfile
+        import zoneinfo
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._write_config(tmp, "Asia/Hong_Kong")
+            from run import get_timezone
+            tz = get_timezone(config_path=cfg)
+            self.assertIsNotNone(tz)
+            # Compare against a fresh ZoneInfo("Asia/Hong_Kong") to confirm
+            # the function read the config correctly (not just returned None).
+            self.assertEqual(
+                tz.utcoffset(None),
+                zoneinfo.ZoneInfo("Asia/Hong_Kong").utcoffset(None),
+            )
+
+    def test_get_timezone_positional_path_raises(self):
+        """Document the bug: passing the config path positionally is wrong.
+        This test pins the current (broken) behaviour so that a future
+        refactor can't silently regress to it without someone noticing."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._write_config(tmp, "Asia/Hong_Kong")
+            from run import get_timezone
+            get_timezone.cache_clear()
+            with self.assertRaises((KeyError, ValueError)):
+                # Positional arg = tz_name. ZoneInfo keys cannot be absolute
+                # paths, so this raises (KeyError on stdlib <3.13, ValueError
+                # on >=3.13 — accept either).
+                get_timezone(cfg)
+
+    def test_weekly_branch_does_not_crash_with_config(self):
+        """End-to-end: when weekly_total > 0 AND a config file is supplied
+        via -c, the script must not raise. Previously, the positional kwarg
+        bug caused an exception that aborted the script mid-render."""
+        mock_data = {
+            "base_resp": {"status_code": 0},
+            "model_remains": [{
+                "model_name": "MiniMax-M*",
+                "current_interval_total_count": 600,
+                "current_interval_usage_count": 300,
+                "current_weekly_total_count": 6000,
+                "current_weekly_usage_count": 3000,
+                "weekly_start_time": 1777219200000,
+                "weekly_end_time": 1777824000000,
+            }]
+        }
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._write_config(tmp, "Asia/Hong_Kong")
+            from run import main, get_timezone
+            get_timezone.cache_clear()
+            captured = StringIO()
+            with patch('run.fetch_usage', return_value=mock_data):
+                with patch('sys.stdout', captured):
+                    main(cfg)  # pass config_path positionally — main() takes
+                               # it as the first positional arg, so this is fine
+            output = captured.getvalue()
+            self.assertNotIn("Unexpected error", output)
+            self.assertIn("Week quota Next reset:", output)
+
+
 if __name__ == "__main__":
     unittest.main()
