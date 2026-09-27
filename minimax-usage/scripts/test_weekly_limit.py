@@ -354,5 +354,158 @@ class TestGetTimezoneKwarg(unittest.TestCase):
             self.assertIn("Week quota Next reset:", output)
 
 
+class TestWeeklyTimeBarNotDuplicatesUsageBar(unittest.TestCase):
+    """Regression test: when weekly_total == 0 (API returns percent but no
+    counts), the weekly 'Time' bar must show REAL elapsed time in the week,
+    computed from weekly_start_time/weekly_end_time — NOT
+    (100 - weekly_remaining_pct), which would duplicate the Usage bar.
+
+    Bug pattern (before the fix):
+      Usage: 10%
+      Time:  10% (3h 30m)  ← WRONG: 10% is from remaining_pct, not elapsed
+    Fixed pattern:
+      Usage: 10%
+      Time:  <2% (3h 30m)  ← correct: ~3.5h elapsed of a 168h week
+    """
+
+    def setUp(self):
+        from run import get_timezone
+        get_timezone.cache_clear()
+
+    def _mock_data(self, week_start_ms, week_end_ms, remaining_pct=90):
+        return {
+            "base_resp": {"status_code": 0},
+            "model_remains": [{
+                "model_name": "MiniMax-M*",
+                "current_interval_total_count": 0,
+                "current_interval_usage_count": 0,
+                "current_interval_remaining_percent": 90,
+                "current_weekly_total_count": 0,        # triggers elif
+                "current_weekly_usage_count": 0,
+                "weekly_start_time": week_start_ms,
+                "weekly_end_time": week_end_ms,
+                "current_weekly_remaining_percent": remaining_pct,
+            }]
+        }
+
+    def test_weekly_time_bar_uses_real_elapsed_not_remaining_pct(self):
+        # 7-day week; now is 3.5h after start.
+        week_start_ms = 1789920000000   # 2026-09-20 16:00 UTC (week start)
+        week_end_ms   = 1790524800000   # 2026-09-27 16:00 UTC (week end)
+        # 3.5h into the week
+        now_ms = week_start_ms + (3 * 3600 + 30 * 60) * 1000
+
+        from run import main, get_timezone
+        get_timezone.cache_clear()
+        captured = StringIO()
+        with patch('run.fetch_usage',
+                   return_value=self._mock_data(week_start_ms, week_end_ms, remaining_pct=90)):
+            with patch('run.now_utc8',
+                       return_value=datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc)
+                                       .astimezone(get_timezone(config_path=None))):
+                with patch('sys.stdout', captured):
+                    main(None)
+        output = captured.getvalue()
+
+        # Usage bar uses remaining_pct=90, so Usage = 10%
+        self.assertIn("Usage: 10%", output)
+        # Time bar must NOT be 10% — that would mean it's just duplicating Usage
+        self.assertNotIn("Time: 10%", output,
+                         "Weekly Time bar duplicates 'Usage' — bug: should use "
+                         "real elapsed time, not 100 - remaining_pct")
+        # 3.5h elapsed of 168h week = 2.08% — bar should show 2%
+        self.assertIn("Time: 2%", output,
+                      "Weekly Time bar should reflect ~2% elapsed (3.5h/168h)")
+
+    def test_weekly_time_bar_at_week_start_is_zero(self):
+        # At week start: 0h elapsed
+        week_start_ms = 1789920000000
+        week_end_ms   = 1790524800000
+        now_ms = week_start_ms + 5 * 60 * 1000  # 5 min in
+
+        from run import main, get_timezone
+        get_timezone.cache_clear()
+        captured = StringIO()
+        with patch('run.fetch_usage',
+                   return_value=self._mock_data(week_start_ms, week_end_ms, remaining_pct=90)):
+            with patch('run.now_utc8',
+                       return_value=datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc)
+                                       .astimezone(get_timezone(config_path=None))):
+                with patch('sys.stdout', captured):
+                    main(None)
+        output = captured.getvalue()
+
+        self.assertIn("Usage: 10%", output)
+        self.assertNotIn("Time: 10%", output)
+        # 5 min / 168 h = 0.05% → int → 0%
+        self.assertIn("Time: 0%", output)
+
+    def test_weekly_time_bar_near_end_shows_high_pct(self):
+        # Near end of week: 167h elapsed of 168h ≈ 99%
+        week_start_ms = 1789920000000
+        week_end_ms   = 1790524800000
+        now_ms = week_start_ms + (167 * 3600) * 1000  # 167h in
+
+        from run import main, get_timezone
+        get_timezone.cache_clear()
+        captured = StringIO()
+        with patch('run.fetch_usage',
+                   return_value=self._mock_data(week_start_ms, week_end_ms, remaining_pct=90)):
+            with patch('run.now_utc8',
+                       return_value=datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc)
+                                       .astimezone(get_timezone(config_path=None))):
+                with patch('sys.stdout', captured):
+                    main(None)
+        output = captured.getvalue()
+
+        self.assertIn("Usage: 10%", output)
+        self.assertNotIn("Time: 10%", output)
+        # 167/168 = 99.4% → int → 99%
+        self.assertIn("Time: 99%", output)
+
+
+class TestWeeklyElapsedTimeIsAdditive(unittest.TestCase):
+    """Verify the remaining_str shown next to the Time bar is the
+    API-derived weekly_secs (whole-week remaining), not the 5h-window
+    hours/minutes/seconds from get_time_until_reset()."""
+
+    def setUp(self):
+        from run import get_timezone
+        get_timezone.cache_clear()
+
+    def test_weekly_remaining_string_uses_api_end_time(self):
+        week_start_ms = 1789920000000   # Sun 16:00 UTC
+        week_end_ms   = 1790524800000   # next Sun 16:00 UTC = +7 days
+        # Now: Wed 12:00 UTC = 92h into the week → 76h remaining (3d 4h)
+        now_ms = week_start_ms + (92 * 3600) * 1000
+
+        mock_data = {
+            "base_resp": {"status_code": 0},
+            "model_remains": [{
+                "model_name": "MiniMax-M*",
+                "current_interval_total_count": 0,
+                "current_interval_usage_count": 0,
+                "current_interval_remaining_percent": 90,
+                "current_weekly_total_count": 0,
+                "current_weekly_usage_count": 0,
+                "weekly_start_time": week_start_ms,
+                "weekly_end_time": week_end_ms,
+                "current_weekly_remaining_percent": 90,
+            }]
+        }
+        from run import main, get_timezone
+        get_timezone.cache_clear()
+        captured = StringIO()
+        with patch('run.fetch_usage', return_value=mock_data):
+            with patch('run.now_utc8',
+                       return_value=datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc)
+                                       .astimezone(get_timezone(config_path=None))):
+                with patch('sys.stdout', captured):
+                    main(None)
+        output = captured.getvalue()
+        # 76h remaining = 3d 4h 0m
+        self.assertIn("3d 4h 0m", output)
+
+
 if __name__ == "__main__":
     unittest.main()

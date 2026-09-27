@@ -290,9 +290,8 @@ def main(config_path=None, debug=False):
                 usage_filled = min(round((used_pct / 100) * 20), 20)
                 usage_empty = 20 - usage_filled
                 print(f"  {'█' * usage_filled}{'░' * usage_empty} Usage: {used_pct}%")
-                elapsed_pct = max(0, 100 - remaining_pct)
-                elapsed_filled = min(round((elapsed_pct / 100) * 20), 20)
-                elapsed_empty = 20 - elapsed_filled
+                # Real elapsed time in the 5h interval (not 100 - remaining_pct,
+                # which would just duplicate the Usage bar).
                 total_secs = hours * 3600 + minutes * 60 + seconds
                 if total_secs >= 86400:
                     d = total_secs // 86400
@@ -303,7 +302,14 @@ def main(config_path=None, debug=False):
                     remaining_str = f"{hours}h {minutes}m"
                 else:
                     remaining_str = f"{minutes}m {seconds}s"
-                print(f"  {'█' * elapsed_filled}{'░' * elapsed_empty} Time: {elapsed_pct}% ({remaining_str}) ⏱️")
+                # time_bar() appends its own '(remaining) ⏱️'. Strip both so we can show
+                # the API-derived remaining time (which reflects the actual
+                # reset boundary rather than local time math).
+                bar = time_bar(hours_elapsed, total_interval_hours, label='Time:')
+                bar = bar.split(' ⏱️')[0]
+                if ' (' in bar:
+                    bar = bar.rsplit(' (', 1)[0]
+                print(f"  {bar} ({remaining_str}) ⏱️")
             print(f"  Next reset: {next_reset.strftime('%H:%M UTC+8')}")
 
             if weekly_total > 0:
@@ -317,26 +323,31 @@ def main(config_path=None, debug=False):
                 print(f"  {time_bar(weekly_elapsed, weekly_total_hours, label='Time:')}")
                 print(f"  Week quota Next reset: {weekly_end.strftime('%d %H:%M UTC+8')}")
             elif weekly_remaining_pct > 0:
-                print()
                 weekly_used_pct = max(0, 100 - weekly_remaining_pct)
                 weekly_usage_filled = min(round((weekly_used_pct / 100) * 20), 20)
                 weekly_usage_empty = 20 - weekly_usage_filled
                 print(f"  {'█' * weekly_usage_filled}{'░' * weekly_usage_empty} Usage: {weekly_used_pct}%")
-                weekly_elapsed_pct = max(0, 100 - weekly_remaining_pct)
-                weekly_elapsed_filled = min(round((weekly_elapsed_pct / 100) * 20), 20)
-                weekly_elapsed_empty = 20 - weekly_elapsed_filled
+                weekly_start = datetime.fromtimestamp(model["weekly_start_time"] / 1000, tz=timezone.utc).astimezone(get_timezone(config_path=config_path))
                 weekly_end = datetime.fromtimestamp(model["weekly_end_time"] / 1000, tz=timezone.utc).astimezone(get_timezone(config_path=config_path))
-                weekly_secs = (weekly_end - now).total_seconds()
+                # Real elapsed time in the week (not 100 - remaining_pct, which
+                # would just duplicate the Usage bar).
+                weekly_elapsed = max(0.0, (now - weekly_start).total_seconds() / 3600)
+                weekly_total_hours = max(0.0, (weekly_end - weekly_start).total_seconds() / 3600)
+                weekly_secs = int((weekly_end - now).total_seconds())
                 if weekly_secs >= 86400:
-                    d = int(weekly_secs // 86400)
-                    h = int((weekly_secs % 86400) // 3600)
-                    m = int((weekly_secs % 3600) // 60)
+                    d = weekly_secs // 86400
+                    h = (weekly_secs % 86400) // 3600
+                    m = (weekly_secs % 3600) // 60
                     weekly_remaining_str = f"{d}d {h}h {m}m"
                 elif weekly_secs >= 3600:
-                    weekly_remaining_str = f"{int(weekly_secs // 3600)}h {int((weekly_secs % 3600) // 60)}m"
+                    weekly_remaining_str = f"{weekly_secs // 3600}h {(weekly_secs % 3600) // 60}m"
                 else:
-                    weekly_remaining_str = f"{int(weekly_secs // 60)}m"
-                print(f"  {'█' * weekly_elapsed_filled}{'░' * weekly_elapsed_empty} Time: {weekly_elapsed_pct}% ({weekly_remaining_str}) ⏱️")
+                    weekly_remaining_str = f"{max(0, weekly_secs // 60)}m"
+                bar = time_bar(weekly_elapsed, weekly_total_hours, label='Time:')
+                bar = bar.split(' ⏱️')[0]
+                if ' (' in bar:
+                    bar = bar.rsplit(' (', 1)[0]
+                print(f"  {bar} ({weekly_remaining_str}) ⏱️")
                 print(f"  Week quota Next reset: {weekly_end.strftime('%d %H:%M UTC+8')}")
 
             if remaining_pct < 10 and total > 0:
