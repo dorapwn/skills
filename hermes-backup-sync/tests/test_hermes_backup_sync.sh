@@ -114,6 +114,47 @@ PY
 )
 assert_eq "yaml data_path readable" "$out" "$TMP/data"
 
+# New: stage_includes expands glob entries
+out=$(bash -c '
+TMP=$(mktemp -d)
+mkdir -p "$TMP/data"
+touch "$TMP/data/foo.db" "$TMP/data/bar.db" "$TMP/data/notes.txt"
+# Pre-create workdir as a git repo so ensure_workdir skips the clone step.
+mkdir -p "$TMP/work"; (cd "$TMP/work" && git init -q && git config user.email t@t && git config user.name t && touch .gitkeep && git add .gitkeep && git commit -qm init)
+export PATH="$HOME/.local/bin:$PATH"
+CONFIG="$TMP/cfg.yml"; printf "data_path: %s\nworkdir: %s\nremote: https://github.com/test/test.git\nbranch: m\ninclude:\n  - \"*.db\"\nexclude: []\nencrypt: []\nlfs: { patterns: [] }\nretention: { keep_local: 7 }\nverify_remote_private: false\nnotify: { on_success: false, on_failure: false }\ndry_run: true\n" "$TMP/data" "$TMP/work" > "$CONFIG"
+HERMES_BACKUP_SYNC_CONFIG="$CONFIG" \
+DRY_RUN=true \
+SKILL_DIR=/opt/data/repos/neoalienson/skills/hermes-backup-sync/scripts \
+bash /opt/data/repos/neoalienson/skills/hermes-backup-sync/scripts/hermes-backup-sync.sh 2>&1 \
+  | grep -E "would rsync|glob include" || true
+' 2>&1)
+echo "$out" | grep -q "would rsync .*foo.db" || { echo "FAIL stage_includes glob matches foo.db"; FAIL=$((FAIL+1)); }
+echo "$out" | grep -q "would rsync .*bar.db" || { echo "FAIL stage_includes glob matches bar.db"; FAIL=$((FAIL+1)); }
+echo "$out" | grep -vq "would rsync .*notes.txt" || { echo "FAIL stage_includes glob leaked non-db"; FAIL=$((FAIL+1)); }
+[[ ${FAIL:-0} -eq 0 ]] && { echo "PASS stage_includes expands glob"; PASS=$((PASS+1)); }
+
+# New: encrypt_secrets expands glob entries
+out=$(bash -c '
+TMP=$(mktemp -d)
+mkdir -p "$TMP/data"
+touch "$TMP/data/foo.db" "$TMP/data/bar.db"
+mkdir -p "$TMP/work"; (cd "$TMP/work" && git init -q && git config user.email t@t && git config user.name t && touch .gitkeep && git add .gitkeep && git commit -qm init)
+export PATH="$HOME/.local/bin:$PATH"
+AGE_KEY="$TMP/key.txt"; age-keygen -o "$AGE_KEY" 2>/dev/null
+RECIP=$(grep "public key:" "$AGE_KEY" | awk "{print \$NF}")
+CONFIG="$TMP/cfg.yml"; printf "data_path: %s\nworkdir: %s\nremote: https://github.com/test/test.git\nbranch: m\ninclude: []\nexclude: []\nencrypt:\n  - \"*.db\"\nlfs: { patterns: [] }\nretention: { keep_local: 7 }\nverify_remote_private: false\nnotify: { on_success: false, on_failure: false }\ndry_run: true\n" "$TMP/data" "$TMP/work" > "$CONFIG"
+HERMES_BACKUP_SYNC_CONFIG="$CONFIG" \
+DRY_RUN=true \
+SKILL_DIR=/opt/data/repos/neoalienson/skills/hermes-backup-sync/scripts \
+AGE_RECIPIENT="$RECIP" \
+bash /opt/data/repos/neoalienson/skills/hermes-backup-sync/scripts/hermes-backup-sync.sh 2>&1 \
+  | grep -E "would age-encrypt|encrypt glob" || true
+' 2>&1)
+echo "$out" | grep -q "would age-encrypt foo.db" || { echo "FAIL encrypt_secrets glob matches foo.db"; FAIL=$((FAIL+1)); }
+echo "$out" | grep -q "would age-encrypt bar.db" || { echo "FAIL encrypt_secrets glob matches bar.db"; FAIL=$((FAIL+1)); }
+[[ ${FAIL:-0} -eq 0 ]] && { echo "PASS encrypt_secrets expands glob"; PASS=$((PASS+1)); }
+
 echo
 echo "== summary: PASS=$PASS FAIL=$FAIL =="
 [[ $FAIL -eq 0 ]] || exit 1

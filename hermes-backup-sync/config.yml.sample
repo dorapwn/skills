@@ -1,8 +1,9 @@
 # config.yml.sample - hermes-backup-sync example
-#   bash scripts/hermes-backup-sync.sh --dry-run
-
+#
+# Copy this to ./config.yml, edit data_path and remote, then run:
+#   bash scripts/hermes-backup-sync.sh --dry-run   (plan only, no writes)
+#   bash scripts/hermes-backup-sync.sh --real     (commit + push to remote)
 data_path: /opt/data
-workdir:   /var/tmp/hermes-backup-sync
 remote:    https://github.com/<your-handle>/hermes-backup-sync-store.git
 branch:    main
 
@@ -19,6 +20,8 @@ include:
   - hooks
   - home
   - scripts
+  # Top-level sqlite databases — kept as encrypted versions only.
+  - "*.db"
 
 # Patterns excluded from any include (rsync globs).
 exclude:
@@ -58,6 +61,10 @@ encrypt:
   - home/.config/hermes-backup-sync/key.txt
   - home/.config/hermes-backup-sync/keygen.out
   - home/.config/gh/hosts.yml
+  # All sqlite databases contain application state; some hold tokens or
+  # session material. Encrypt all .db at the top level by default — safer
+  # than enumerating which ones are "really" sensitive.
+  - "*.db"
 
 # Large binaries ride git-lfs. Narrow on purpose — LFS bandwidth is metered.
 lfs:

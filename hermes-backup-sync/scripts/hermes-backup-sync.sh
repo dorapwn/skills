@@ -131,7 +131,10 @@ visibility_check() {
     local visibility_flag
     visibility_flag=$(get verify_remote_private)
     visibility_flag=${visibility_flag:-true}
-    [[ "$visibility_flag" == "false" ]] && { warn "visibility check skipped (verify_remote_private=false)"; return 0; }
+    if [[ "${visibility_flag,,}" == "false" ]]; then
+        warn "visibility check skipped (verify_remote_private=false)"
+        return 0
+    fi
     local repo_path="${cfg_remote#*github.com/}"
     repo_path="${repo_path%.git}"
     local token="${GITHUB_TOKEN:-}"
@@ -220,17 +223,32 @@ stage_includes() {
     local staged=0
     while IFS= read -r inc; do
         [[ -z "$inc" ]] && continue
-        local src="$cfg_data_path/$inc"
-        if [[ ! -e "$src" ]]; then
-            warn "include missing, skipping: $inc"
-            continue
-        fi
-        if $DRY_RUN; then
-            dry "would rsync $src -> $cfg_workdir/"
+        # Glob expansion: if the include string contains glob metacharacters,
+        # expand it against data_path so the user can write `*.db` instead of
+        # enumerating every file. Quotes inside the config (e.g. "*.db") are
+        # stripped by the parser, so the expansion sees a clean pattern.
+        local -a paths
+        if [[ "$inc" == *[*?[]* ]]; then
+            # shellcheck disable=SC2207
+            mapfile -t paths < <(cd "$cfg_data_path" && compgen -G "$inc" 2>/dev/null | sort)
+            if [[ ${#paths[@]} -eq 0 ]]; then
+                warn "glob include matched nothing: $inc"; continue
+            fi
         else
-            rsync "${rsync_args[@]}" "$src" "$cfg_workdir/" 2>/dev/null || warn "rsync partial: $inc"
+            paths=("$inc")
         fi
-        staged=$((staged+1))
+        for path in "${paths[@]}"; do
+            local src="$cfg_data_path/$path"
+            if [[ ! -e "$src" ]]; then
+                warn "include missing, skipping: $path"; continue
+            fi
+            if $DRY_RUN; then
+                dry "would rsync $src -> $cfg_workdir/"
+            else
+                rsync "${rsync_args[@]}" "$src" "$cfg_workdir/" 2>/dev/null || warn "rsync partial: $path"
+            fi
+            staged=$((staged+1))
+        done
     done < <(python3 - "$CONFIG" <<'PY'
 import sys, re
 text = open(sys.argv[1]).read()
@@ -256,17 +274,31 @@ encrypt_secrets() {
     local n=0
     while IFS= read -r path; do
         [[ -z "$path" ]] && continue
-        local src="$cfg_data_path/$path"
-        local dst="$cfg_workdir/${path}.age"
-        [[ ! -f "$src" ]] && { warn "encrypt target missing: $path"; continue; }
-        if $DRY_RUN; then
-            dry "would age-encrypt $path -> ${path}.age"
+        # Glob expansion mirrors stage_includes: a pattern like `*.db` expands
+        # to every matching top-level file. Each match gets its own .age blob.
+        local -a targets
+        if [[ "$path" == *[*?[]* ]]; then
+            # shellcheck disable=SC2207
+            mapfile -t targets < <(cd "$cfg_data_path" && compgen -G "$path" 2>/dev/null | sort)
+            if [[ ${#targets[@]} -eq 0 ]]; then
+                warn "encrypt glob matched nothing: $path"; continue
+            fi
         else
-            mkdir -p "$(dirname "$dst")"
-            age -r "$recip" -o "$dst" "$src" 2>/dev/null || { err "age encrypt failed: $path"; continue; }
-            rm -f "$cfg_workdir/$path"
+            targets=("$path")
         fi
-        n=$((n+1))
+        for tgt in "${targets[@]}"; do
+            local src="$cfg_data_path/$tgt"
+            local dst="$cfg_workdir/${tgt}.age"
+            [[ ! -f "$src" ]] && { warn "encrypt target missing: $tgt"; continue; }
+            if $DRY_RUN; then
+                dry "would age-encrypt $tgt -> ${tgt}.age"
+            else
+                mkdir -p "$(dirname "$dst")"
+                age -r "$recip" -o "$dst" "$src" 2>/dev/null || { err "age encrypt failed: $tgt"; continue; }
+                rm -f "$cfg_workdir/$tgt"
+            fi
+            n=$((n+1))
+        done
     done < <(python3 - "$CONFIG" <<'PY'
 import sys, re
 text = open(sys.argv[1]).read()
