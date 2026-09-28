@@ -347,6 +347,180 @@ PY
     ok "manifest written: $(basename "$manifest")"
 }
 
+write_not_backed_up_inventory() {
+    # Walk the source tree and classify every file into one of:
+    #   - INCLUDED        : landed in workdir as plaintext or .age
+    #   - EXCLUDED        : matches an exclude: pattern (intentional)
+    #   - OUT_OF_SCOPE    : no include: entry covers its path
+    #   - HIDDEN_OUT_OF_SCOPE : dotfile/dotdir outside any include: parent
+    #   - MISSED          : covered by include: but didn't reach workdir (anomaly)
+    # The output is not_backed_up.md at the workdir root, listing only
+    # the gaps (INCLUDED files are skipped) grouped by reason. Each
+    # section is headed and sub-bulleted with file/dir + size.
+    local inventory="$cfg_workdir/not_backed_up.md"
+    if $DRY_RUN; then dry "would write not_backed_up.md"; return 0; fi
+    python3 - "$CONFIG" "$cfg_data_path" "$cfg_workdir" "$inventory" <<'PY'
+import os, sys, re, fnmatch, datetime, json
+config_path, data_root, work_root, out_path = sys.argv[1:5]
+
+# Parse include/exclude patterns from config. Reuse the same parser shape
+# as stage_includes/encrypt_secrets so we don't drift.
+def parse_list(key):
+    with open(config_path) as f:
+        text = f.read()
+    in_block = False
+    out = []
+    for ln in text.splitlines():
+        ln_no_comment = re.split(r'\s+#', ln, maxsplit=1)[0]
+        if not in_block and re.match(rf'\s*{key}:\s*$', ln_no_comment):
+            in_block = True; continue
+        if in_block:
+            if not ln_no_comment.strip(): continue
+            if re.match(r'^\S', ln): break
+            m = re.match(r'^\s*-\s*"?([^"]+?)"?\s*$', ln_no_comment)
+            if m: out.append(m.group(1))
+    return out
+
+includes = parse_list('include')
+excludes = parse_list('exclude')
+
+# Expand include globs (mirrors stage_includes).
+expanded_includes = set()
+for inc in includes:
+    if any(c in inc for c in '*?['):
+        for p in os.listdir(data_root):
+            if fnmatch.fnmatch(p, inc):
+                expanded_includes.add(p)
+    else:
+        expanded_includes.add(inc)
+
+def path_in_includes(rel):
+    """Return True if `rel` is covered by any include: entry (file or under an included dir)."""
+    for inc in expanded_includes:
+        if rel == inc or rel.startswith(inc + '/'):
+            return True
+    return False
+
+def path_in_excludes(rel):
+    """Return True if `rel` matches any exclude: glob."""
+    for ex in excludes:
+        # rsync semantics: 'foo/**' matches anything under foo/
+        if ex.endswith('/**'):
+            base = ex[:-3]
+            if rel == base or rel.startswith(base + '/'):
+                return True
+        elif fnmatch.fnmatch(rel, ex):
+            return True
+    return False
+
+# Build set of files that landed in workdir (post-encrypt, post-cleanup).
+shipped = set()
+for dp, dns, fns in os.walk(work_root):
+    dns[:] = [d for d in dns if d not in (".git", "_snapshots")]
+    for fn in fns:
+        if fn == "MANIFEST.json" or fn == "not_backed_up.md" or fn == ".gitattributes":
+            continue  # these are workdir-only artifacts, not "backed up" data
+        shipped.add(os.path.relpath(os.path.join(dp, fn), work_root))
+
+# Walk data_root.
+buckets = {
+    "OUT_OF_SCOPE":          [],
+    "HIDDEN_OUT_OF_SCOPE":   [],
+    "EXCLUDED":              [],
+    "MISSED":                [],
+}
+counts = {"data_files": 0, "shipped_files": len(shipped), "gap_files": 0}
+
+for dp, dns, fns in os.walk(data_root, followlinks=False):
+    # Skip .git inside data_root (in case user inits a repo here).
+    dns[:] = [d for d in dns if d != ".git"]
+    for fn in fns:
+        counts["data_files"] += 1
+        full = os.path.join(dp, fn)
+        try:
+            rel = os.path.relpath(full, data_root)
+        except ValueError:
+            # Different drives on Windows; not relevant here but be defensive.
+            continue
+        # If it shipped, it's INCLUDED — skip.
+        if rel in shipped or (rel + ".age") in shipped:
+            continue
+        try:
+            size = os.path.getsize(full)
+        except OSError:
+            # File disappeared between walk and stat (e.g. chromium SingletonLock).
+            # Treat as 0 so it still appears in the inventory as a known transient.
+            size = 0
+        entry = (rel, size)
+        if path_in_excludes(rel):
+            buckets["EXCLUDED"].append(entry)
+        elif path_in_includes(rel):
+            buckets["MISSED"].append(entry)
+        else:
+            # Was this an ancestor path (directory itself, treated as out-of-scope)?
+            top = rel.split('/', 1)[0]
+            if top.startswith('.') and not path_in_includes(rel):
+                buckets["HIDDEN_OUT_OF_SCOPE"].append(entry)
+            else:
+                buckets["OUT_OF_SCOPE"].append(entry)
+        counts["gap_files"] += 1
+
+# Aggregate same-dir entries: "repos/" with N files shows as one line.
+def aggregate(entries):
+    by_dir = {}
+    for rel, size in entries:
+        top = rel.split('/', 1)[0] if '/' in rel else rel
+        if top not in by_dir:
+            by_dir[top] = {"count": 0, "size": 0, "examples": []}
+        by_dir[top]["count"] += 1
+        by_dir[top]["size"] += size
+        if len(by_dir[top]["examples"]) < 3:
+            by_dir[top]["examples"].append(rel)
+    return sorted(by_dir.items())
+
+def fmt_size(n):
+    if n < 1024: return f"{n} B"
+    if n < 1024*1024: return f"{n/1024:.1f} KB"
+    if n < 1024*1024*1024: return f"{n/(1024*1024):.1f} MB"
+    return f"{n/(1024*1024*1024):.1f} GB"
+
+now = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+lines = []
+lines.append(f"# Files NOT backed up — {now}")
+lines.append("")
+lines.append(f"Generated by `hermes-backup-sync` from `{data_root}`.")
+lines.append(f"Source tree had **{counts['data_files']}** files; **{counts['shipped_files']}** landed in remote.")
+lines.append(f"This document lists the **{counts['gap_files']}** files that did NOT, grouped by reason.")
+lines.append("")
+lines.append("Re-run the backup to refresh; this file is regenerated every sync.")
+lines.append("")
+
+reason_blurbs = {
+    "OUT_OF_SCOPE":        "Source path is outside every `include:` entry. Add the path or its parent directory to `include:` to capture.",
+    "HIDDEN_OUT_OF_SCOPE": "Dotfile/dotdir outside any `include:` parent. Dotfiles are skipped by rsync unless explicitly named.",
+    "EXCLUDED":            "Source path matches an `exclude:` pattern. Intentional — remove the pattern to capture.",
+    "MISSED":              "Source path was covered by `include:` but did not reach the workdir. Usually a transient error; investigate the rsync warnings.",
+}
+for reason in ("OUT_OF_SCOPE", "HIDDEN_OUT_OF_SCOPE", "EXCLUDED", "MISSED"):
+    items = buckets[reason]
+    if not items: continue
+    lines.append(f"## {reason}  ({len(items)} files)")
+    lines.append("")
+    lines.append(reason_blurbs[reason])
+    lines.append("")
+    for top, info in aggregate(items):
+        lines.append(f"- `{top}/` &nbsp; ({info['count']} files, {fmt_size(info['size'])})" if '/' in top or info['count'] > 1
+                     else f"- `{top}` &nbsp; ({fmt_size(info['size'])})")
+        for ex in info['examples']:
+            lines.append(f"    - `{ex}`")
+    lines.append("")
+
+with open(out_path, "w") as f:
+    f.write("\n".join(lines))
+PY
+    ok "inventory written: not_backed_up.md"
+}
+
 commit_and_push() {
     if $DRY_RUN; then
         dry "would git add -A && commit && push"
@@ -473,6 +647,7 @@ case "$SUBCMD" in
         stage_includes
         encrypt_secrets
         write_manifest
+        write_not_backed_up_inventory
         commit_and_push
         snapshot_local
         notify success
