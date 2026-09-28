@@ -1,0 +1,91 @@
+# config.yml.sample - hermes-backup-sync example
+#   bash scripts/hermes-backup-sync.sh --dry-run
+
+data_path: /opt/data
+workdir:   /var/tmp/hermes-backup-sync
+remote:    https://github.com/<your-handle>/hermes-backup-sync-store.git
+branch:    main
+
+include:
+  - config.yaml
+  - SOUL.md
+  - channel_directory.json
+  - skills
+  - memories
+  - cron
+  - platforms
+  - plans
+  - skins
+  - hooks
+  - home
+  - scripts
+
+# Patterns excluded from any include (rsync globs).
+exclude:
+  - ".cache/**"
+  - ".npm/**"
+  - "node_modules/**"
+  - "*.lock"
+  - "__pycache__/**"
+  - "*.pyc"
+  - ".venv/**"
+  - "audio_cache/**"
+  - "image_cache/**"
+  - "cache/**"
+  - ".curator_backups/**"
+  - "backups/**"
+  - "logs/**"
+  - ".lazy-packages/**"
+  - "lsp/**"
+  - "bin/**"
+  - ".local/**"
+  # home/ runtime junk — keep only small dotfiles (.gitconfig, .profile)
+  - "home/.agent-browser/**"
+  - "home/.cache/**"
+  - "home/.config/chromium/**"
+  - "home/.config/chromium-profile/**"
+  - "home/.config/browser-harness/**"
+  - "home/.config/google-chrome-for-testing/**"
+  - "home/.npm/**"
+  - "home/.local/**"
+
+# Sensitive files: age-encrypted before commit. The plaintext never lands
+# in the remote repo. Restoring requires AGE_KEY.
+encrypt:
+  - .env
+  - auth.json
+  - install_id
+  - home/.config/hermes-backup-sync/key.txt
+  - home/.config/hermes-backup-sync/keygen.out
+  - home/.config/gh/hosts.yml
+
+# Large binaries ride git-lfs. Narrow on purpose — LFS bandwidth is metered.
+lfs:
+  patterns:
+    - "*.db"
+    - "*.sqlite"
+    - "*.bin"
+    - "*.tar"
+    - "*.tgz"
+    - "*.zip"
+    - "*.png"
+    - "*.jpg"
+    - "*.jpeg"
+    - "*.webp"
+    - "*.gif"
+
+# Refuse to push if the remote is public.
+verify_remote_private: true
+
+retention:
+  keep_local: 7
+
+notify:
+  on_success: false
+  on_failure: true
+  telegram:
+    bot_token_env: TELEGRAM_BOT_TOKEN
+    chat_id_env:    TELEGRAM_HOME_CHAT_ID
+  script: null
+
+dry_run: true
