@@ -155,6 +155,78 @@ echo "$out" | grep -q "would age-encrypt foo.db" || { echo "FAIL encrypt_secrets
 echo "$out" | grep -q "would age-encrypt bar.db" || { echo "FAIL encrypt_secrets glob matches bar.db"; FAIL=$((FAIL+1)); }
 [[ ${FAIL:-0} -eq 0 ]] && { echo "PASS encrypt_secrets expands glob"; PASS=$((PASS+1)); }
 
+# New: write_not_backed_up_inventory produces a markdown audit file.
+# Source the script to a point where write_not_backed_up_inventory is defined,
+# then call the function directly. We extract the function via awk with a
+# brace counter so we don't get tripped up by the PY heredoc inside.
+TMP=$(mktemp -d)
+mkdir -p "$TMP/data" "$TMP/data/skills" "$TMP/work"
+touch "$TMP/data/skills/skill1.md" "$TMP/data/skills/skill2.md"
+touch "$TMP/data/loose-file.txt"
+touch "$TMP/data/another.db"
+(cd "$TMP/work" && git init -q && git config user.email t@t && git config user.name t && touch .gitkeep && git add .gitkeep && git commit -qm init)
+CONFIG="$TMP/cfg.yml"
+cat > "$CONFIG" <<EOF
+data_path: $TMP/data
+workdir:   $TMP/work
+remote:    https://github.com/test/test.git
+branch:    m
+include:
+  - skills
+exclude: []
+encrypt: []
+lfs:
+  patterns: []
+retention:
+  keep_local: 7
+verify_remote_private: false
+notify:
+  on_success: false
+  on_failure: false
+dry_run: false
+EOF
+export PATH="$HOME/.local/bin:$PATH"
+export HERMES_BACKUP_SYNC_CONFIG="$CONFIG"
+export SKILL_DIR=/opt/data/repos/neoalienson/skills/hermes-backup-sync/scripts
+# Use awk to extract a single function definition (matched by name with brace count).
+# Tolerates whitespace variations between '()' and '{'.
+extract_fn() {
+    awk -v fn="$1" '
+        index($0, fn"()") == 1 { capture=1; depth=0 }
+        capture { print; for (i=1; i<=length($0); i++) { c=substr($0,i,1); if (c=="{") depth++; else if (c=="}") { depth--; if (depth==0) { capture=0; print ""; next } } } }
+    ' "$2"
+}
+eval "$(extract_fn write_not_backed_up_inventory /opt/data/repos/neoalienson/skills/hermes-backup-sync/scripts/hermes-backup-sync.sh)"
+eval "$(extract_fn log /opt/data/repos/neoalienson/skills/hermes-backup-sync/scripts/hermes-backup-sync.sh)"
+eval "$(extract_fn ok /opt/data/repos/neoalienson/skills/hermes-backup-sync/scripts/hermes-backup-sync.sh)"
+eval "$(extract_fn dry /opt/data/repos/neoalienson/skills/hermes-backup-sync/scripts/hermes-backup-sync.sh)"
+eval "$(extract_fn warn /opt/data/repos/neoalienson/skills/hermes-backup-sync/scripts/hermes-backup-sync.sh)"
+eval "$(extract_fn err /opt/data/repos/neoalienson/skills/hermes-backup-sync/scripts/hermes-backup-sync.sh)"
+# Pre-set cfg_* vars so the extracted function (which references them
+# directly under `set -u`) has them defined. Values come from the test
+# config; if the function references others, we'll need to add them.
+cfg_data_path="$TMP/data"
+cfg_workdir="$TMP/work"
+CONFIG="$CONFIG"
+DRY_RUN=false
+write_not_backed_up_inventory 2>&1 | head -3
+if [[ ! -s "$TMP/work/not_backed_up.md" ]]; then
+    echo "FAIL inventory file is empty/missing"; FAIL=$((FAIL+1))
+else
+    if ! grep -q "## OUT_OF_SCOPE" "$TMP/work/not_backed_up.md"; then
+        echo "FAIL inventory missing OUT_OF_SCOPE section"; FAIL=$((FAIL+1))
+    fi
+    if ! grep -q "loose-file.txt" "$TMP/work/not_backed_up.md"; then
+        echo "FAIL inventory missing loose-file.txt entry"; FAIL=$((FAIL+1))
+    fi
+    if grep -q '`skill1.md`' "$TMP/work/not_backed_up.md"; then
+        echo "FAIL inventory leaked skill1.md (it IS included)"; FAIL=$((FAIL+1))
+    fi
+    PASS=$((PASS+1))
+    echo "PASS write_not_backed_up_inventory produces markdown"
+fi
+rm -rf "$TMP"
+
 echo
 echo "== summary: PASS=$PASS FAIL=$FAIL =="
 [[ $FAIL -eq 0 ]] || exit 1
