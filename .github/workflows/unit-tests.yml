@@ -75,3 +75,30 @@ jobs:
       run: |
         cd todo-list
         python -m pytest
+
+  test-bash:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update -q
+        sudo apt-get install -y --no-install-recommends \
+          git git-lfs jq rsync curl ca-certificates
+
+    - name: Install age (binary release)
+      run: |
+        cd /tmp
+        curl -fsSL --retry 3 -o age.tar.gz \
+          https://github.com/FiloSottile/age/releases/download/v1.2.1/age-v1.2.1-linux-amd64.tar.gz
+        echo "7df45a6cc87d4da11cc03a539a7470c15b1041ab2b396af088fe9990f7c79d50  age.tar.gz" | sha256sum -c -
+        tar -xzf age.tar.gz
+        sudo install -m 0755 age/age /usr/local/bin/age
+        sudo install -m 0755 age/age-keygen /usr/local/bin/age-keygen
+
+    - name: Run hermes-backup-sync tests
+      run: |
+        bash hermes-backup-sync/tests/test_hermes_backup_sync.sh
