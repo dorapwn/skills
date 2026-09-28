@@ -9,6 +9,9 @@ SKILL_DIR="$(dirname "$SCRIPT_DIR")"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
+# Resolve TEST_DIR (used by tests below for portable paths)
+TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 PASS=0
 FAIL=0
 
@@ -125,10 +128,10 @@ export PATH="$HOME/.local/bin:$PATH"
 CONFIG="$TMP/cfg.yml"; printf "data_path: %s\nworkdir: %s\nremote: https://github.com/test/test.git\nbranch: m\ninclude:\n  - \"*.db\"\nexclude: []\nencrypt: []\nlfs: { patterns: [] }\nretention: { keep_local: 7 }\nverify_remote_private: false\nnotify: { on_success: false, on_failure: false }\ndry_run: true\n" "$TMP/data" "$TMP/work" > "$CONFIG"
 HERMES_BACKUP_SYNC_CONFIG="$CONFIG" \
 DRY_RUN=true \
-SKILL_DIR=/opt/data/repos/neoalienson/skills/hermes-backup-sync/scripts \
-bash /opt/data/repos/neoalienson/skills/hermes-backup-sync/scripts/hermes-backup-sync.sh 2>&1 \
+SKILL_DIR="$1/../scripts" \
+bash "$1/../scripts/hermes-backup-sync.sh" 2>&1 \
   | grep -E "would rsync|glob include" || true
-' 2>&1)
+' -- "$TEST_DIR" 2>&1)
 echo "$out" | grep -q "would rsync .*foo.db" || { echo "FAIL stage_includes glob matches foo.db"; FAIL=$((FAIL+1)); }
 echo "$out" | grep -q "would rsync .*bar.db" || { echo "FAIL stage_includes glob matches bar.db"; FAIL=$((FAIL+1)); }
 echo "$out" | grep -vq "would rsync .*notes.txt" || { echo "FAIL stage_includes glob leaked non-db"; FAIL=$((FAIL+1)); }
@@ -146,11 +149,11 @@ RECIP=$(grep "public key:" "$AGE_KEY" | awk "{print \$NF}")
 CONFIG="$TMP/cfg.yml"; printf "data_path: %s\nworkdir: %s\nremote: https://github.com/test/test.git\nbranch: m\ninclude: []\nexclude: []\nencrypt:\n  - \"*.db\"\nlfs: { patterns: [] }\nretention: { keep_local: 7 }\nverify_remote_private: false\nnotify: { on_success: false, on_failure: false }\ndry_run: true\n" "$TMP/data" "$TMP/work" > "$CONFIG"
 HERMES_BACKUP_SYNC_CONFIG="$CONFIG" \
 DRY_RUN=true \
-SKILL_DIR=/opt/data/repos/neoalienson/skills/hermes-backup-sync/scripts \
+SKILL_DIR="$1/../scripts" \
 AGE_RECIPIENT="$RECIP" \
-bash /opt/data/repos/neoalienson/skills/hermes-backup-sync/scripts/hermes-backup-sync.sh 2>&1 \
+bash "$1/../scripts/hermes-backup-sync.sh" 2>&1 \
   | grep -E "would age-encrypt|encrypt glob" || true
-' 2>&1)
+' -- "$TEST_DIR" 2>&1)
 echo "$out" | grep -q "would age-encrypt foo.db" || { echo "FAIL encrypt_secrets glob matches foo.db"; FAIL=$((FAIL+1)); }
 echo "$out" | grep -q "would age-encrypt bar.db" || { echo "FAIL encrypt_secrets glob matches bar.db"; FAIL=$((FAIL+1)); }
 [[ ${FAIL:-0} -eq 0 ]] && { echo "PASS encrypt_secrets expands glob"; PASS=$((PASS+1)); }
@@ -187,7 +190,7 @@ dry_run: false
 EOF
 export PATH="$HOME/.local/bin:$PATH"
 export HERMES_BACKUP_SYNC_CONFIG="$CONFIG"
-export SKILL_DIR=/opt/data/repos/neoalienson/skills/hermes-backup-sync/scripts
+export SKILL_DIR="$TEST_DIR/../scripts"
 # Use awk to extract a single function definition (matched by name with brace count).
 # Tolerates whitespace variations between '()' and '{'.
 extract_fn() {
@@ -196,12 +199,12 @@ extract_fn() {
         capture { print; for (i=1; i<=length($0); i++) { c=substr($0,i,1); if (c=="{") depth++; else if (c=="}") { depth--; if (depth==0) { capture=0; print ""; next } } } }
     ' "$2"
 }
-eval "$(extract_fn write_not_backed_up_inventory /opt/data/repos/neoalienson/skills/hermes-backup-sync/scripts/hermes-backup-sync.sh)"
-eval "$(extract_fn log /opt/data/repos/neoalienson/skills/hermes-backup-sync/scripts/hermes-backup-sync.sh)"
-eval "$(extract_fn ok /opt/data/repos/neoalienson/skills/hermes-backup-sync/scripts/hermes-backup-sync.sh)"
-eval "$(extract_fn dry /opt/data/repos/neoalienson/skills/hermes-backup-sync/scripts/hermes-backup-sync.sh)"
-eval "$(extract_fn warn /opt/data/repos/neoalienson/skills/hermes-backup-sync/scripts/hermes-backup-sync.sh)"
-eval "$(extract_fn err /opt/data/repos/neoalienson/skills/hermes-backup-sync/scripts/hermes-backup-sync.sh)"
+eval "$(extract_fn write_not_backed_up_inventory "$TEST_DIR/../scripts/hermes-backup-sync.sh")"
+eval "$(extract_fn log "$TEST_DIR/../scripts/hermes-backup-sync.sh")"
+eval "$(extract_fn ok "$TEST_DIR/../scripts/hermes-backup-sync.sh")"
+eval "$(extract_fn dry "$TEST_DIR/../scripts/hermes-backup-sync.sh")"
+eval "$(extract_fn warn "$TEST_DIR/../scripts/hermes-backup-sync.sh")"
+eval "$(extract_fn err "$TEST_DIR/../scripts/hermes-backup-sync.sh")"
 # Pre-set cfg_* vars so the extracted function (which references them
 # directly under `set -u`) has them defined. Values come from the test
 # config; if the function references others, we'll need to add them.
