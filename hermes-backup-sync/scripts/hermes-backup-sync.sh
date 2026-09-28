@@ -12,6 +12,22 @@
 #   prune        keep N most recent local snapshots
 #   restore      clone + decrypt into a target dir
 #   init         one-time repo setup: git-lfs track + write age recipient hint
+
+# ---------- cron PATH fixup ----------
+# When invoked via `hermes cron run` or the cron scheduler, the sanitized env
+# passes a literal "$PATH" string (no expansion), so /usr/bin etc. is missing.
+# Prepend the usual locations. Harmless in a normal interactive shell.
+for _p in /usr/local/sbin /usr/local/bin /usr/sbin /usr/bin /sbin /bin; do
+    case ":$PATH:" in *":$_p:"*) ;; *) PATH="$_p:$PATH" ;; esac
+done
+# User-local installs (age, jq, git-lfs, rsync) live in ~/.local/bin.
+# /opt/data/bin holds `gh` and other workspace-local CLI tools in this image.
+for _p in "$HOME/.local/bin" "$HOME/bin" /opt/data/bin; do
+    [[ -d "$_p" ]] && case ":$PATH:" in *":$_p:"*) ;; *) PATH="$_p:$PATH" ;; esac
+done
+unset _p
+export PATH
+
 set -euo pipefail
 
 # ---------- paths ----------
