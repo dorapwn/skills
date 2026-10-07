@@ -64,7 +64,13 @@ GitHub side:
 
 ## Configuration
 
-All behaviour is driven by `config.yml` next to the script (path overridable via `HERMES_BACKUP_SYNC_CONFIG`). A complete example:
+All behaviour is driven by `config.yml` next to the script. Path resolution precedence (highest wins):
+
+1. `--config PATH` flag passed on the command line
+2. `HERMES_BACKUP_SYNC_CONFIG` environment variable (when explicitly set by your wrapper)
+3. `config.yml` sitting next to the running script (the default for any installed version)
+
+The third path is what makes persistent installs work: the script ignores any stale `HERMES_BACKUP_SYNC_CONFIG` exported from the host environment and always loads the config that ships with the install. A complete example:
 
 ```yaml
 # config.yml — hermes-backup-sync

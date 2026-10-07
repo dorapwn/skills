@@ -13,6 +13,15 @@
 #   restore      clone + decrypt into a target dir
 #   init         one-time repo setup: git-lfs track + write age recipient hint
 
+# ---------- persistent-mode wiring ----------
+# Default to the config.yml that ships next to the running script (the install
+# location, not the source-of-truth repo). Unset HERMES_BACKUP_SYNC_CONFIG so a
+# stale value exported from the host environment cannot redirect us to a path
+# that has moved, been deleted, or never existed for this install. Operators
+# who genuinely want a different config can still pass --config PATH or
+# re-export the env var inline in their own wrapper.
+unset HERMES_BACKUP_SYNC_CONFIG
+
 # ---------- cron PATH fixup ----------
 # When invoked via `hermes cron run` or the cron scheduler, the sanitized env
 # passes a literal "$PATH" string (no expansion), so /usr/bin etc. is missing.
@@ -132,6 +141,25 @@ cfg_keep_local=${cfg_keep_local:-7}
 [[ -z "$cfg_remote"   ]] && { err "config: remote missing"; exit 2; }
 
 DRY_RUN=false
+# CLI flag parsing. Supported flags (consumed, not passed through):
+#   --config PATH | --config=PATH    Override HERMES_BACKUP_SYNC_CONFIG inline.
+#   --dry-run | --real                Pre-set DRY_RUN; takes precedence over config.
+# Remaining args are forwarded as the subcommand (sync / verify / prune / restore / init).
+NEW_ARGS=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --config)
+            [[ -n "${2:-}" ]] || { err "--config requires a PATH"; exit 2; }
+            HERMES_BACKUP_SYNC_CONFIG="$2"; shift 2 ;;
+        --config=*)
+            HERMES_BACKUP_SYNC_CONFIG="${1#--config=}"; shift ;;
+        --dry-run|--real)
+            DRY_RUN=true; shift ;;
+        *)
+            NEW_ARGS+=("$1"); shift ;;
+    esac
+done
+set -- "${NEW_ARGS[@]}"
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=true
 # Config-driven dry_run also flips the flag (CLI takes precedence).
 # Python's bool True/False serializes capitalized; the YAML reader in this
